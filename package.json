@@ -1,0 +1,22 @@
+{
+  "name": "korean-bot",
+  "version": "1.0.0",
+  "description": "",
+  "main": "index.js",
+  "scripts": {
+    "test": "echo \"Error: no test specified\" && exit 1"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/NMamont/korean-bot.git"
+  },
+  "keywords": [],
+  "type": "commonjs",
+  "bugs": {
+    "url": "https://github.com/NMamont/korean-bot/issues"
+  },
+  "homepage": "https://github.com/NMamont/korean-bot#readme",
+  "devDependencies": {
+    "wrangler": "^4.127.1"
+  }
+}

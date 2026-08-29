@@ -1,0 +1,12 @@
+name = "auto-parts-telegram-bot"
+main = "src/index.js"
+compatibility_date = "2024-09-23"
+
+[vars]
+GOOGLE_SPREADSHEET_ID = "11oQUiWgY3M07dqA8nftfCGwe-CuvbtIf5WKf7g9cnlE"
+
+[build]
+command = ""
+
+[node_compat]
+enabled = true
