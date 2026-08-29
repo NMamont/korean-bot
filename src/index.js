@@ -11,43 +11,46 @@ export default {
       return new Response('Unauthorized', { status: 401 });
     }
 
+    // Змінна для chatId, щоб мати доступ до неї у блоці catch
+    let currentChatId = null;
+
     try {
       const payload = await request.json();
       if (!payload.message || !payload.message.text) return new Response('OK');
 
-// 1. Отримуємо chatId та текст із повідомлення або іншої дії (callback)
-      const chatId = payload.message?.chat?.id || payload.callback_query?.message?.chat?.id;
+      // Отримуємо chatId та текст
+      currentChatId = payload.message?.chat?.id || payload.callback_query?.message?.chat?.id;
       const text = payload.message?.text;
 
       // 2. Безпека: Whitelist за Chat ID
-      if (chatId) {
+      if (currentChatId) {
         const rawAllowed = String(env.ALLOWED_CHAT_IDS || '');
         const allowedIds = rawAllowed
           .split(',')
           .map(id => id.trim())
           .filter(Boolean);
 
-        if (!allowedIds.includes(String(chatId))) {
-          console.warn(`Access denied for Chat ID: ${chatId}`);
-          await sendTelegramMessage(chatId, "🚫 Доступ заборонено.", env.TELEGRAM_BOT_TOKEN);
+        if (!allowedIds.includes(String(currentChatId))) {
+          console.warn(`Access denied for Chat ID: ${currentChatId}`);
+          await sendTelegramMessage(currentChatId, "🚫 Доступ заборонено.", env.TELEGRAM_BOT_TOKEN);
           return new Response('OK', { status: 200 });
         }
       }
 
       // Ігнорування службових команд Telegram
       if (text.startsWith('/')) {
-        await sendTelegramMessage(chatId, "👋 Надішліть текст замовлення з VIN-кодом або артикулами запчастин.", env.TELEGRAM_TOKEN);
+        await sendTelegramMessage(currentChatId, "👋 Надішліть текст замовлення з VIN-кодом або артикулами запчастин.", env.TELEGRAM_BOT_TOKEN);
         return new Response('OK');
       }
 
       // UX: Миттєвий фідбек
-      await sendTelegramMessage(chatId, "⏳ ШІ аналізує текст та розшифровує дані...", env.TELEGRAM_TOKEN);
+      await sendTelegramMessage(currentChatId, "⏳ ШІ аналізує текст та розшифровує дані...", env.TELEGRAM_BOT_TOKEN);
 
-      // Крок 1: Парсинг через OpenAI
+      // Крок 1: Парсинг через Groq API
       const parsedData = await parseTextWithLLM(text, env.OPENAI_API_KEY);
 
       if (!parsedData || !parsedData.parts || parsedData.parts.length === 0) {
-        await sendTelegramMessage(chatId, "❌ Не знайдено кодів запчастин або артикулів у тексті.", env.TELEGRAM_TOKEN);
+        await sendTelegramMessage(currentChatId, "❌ Не знайдено кодів запчастин або артикулів у тексті.", env.TELEGRAM_BOT_TOKEN);
         return new Response('OK');
       }
 
@@ -64,13 +67,16 @@ export default {
       await appendToGoogleSheets(parsedData, orderId, env);
 
       // Крок 4: Формування та відправка звіту користувачу
-      const partsListStr = parsedData.parts.map(p => `• <code>${p.number}</code> — ${p.name} (${p.quantity || 1} шт)`).join('\n');
+      const partsListStr = parsedData.parts.map(p => `• <code>${p.number || 'Без OEM'}</code> — ${p.name} (${p.quantity || 1} шт)`).join('\n');
       const reply = `✅ <b>Замовлення успішно додано!</b>\n🆔 <b>ID:</b> <code>${orderId}</code>\n🚗 <b>Авто:</b> ${parsedData.car || 'Не визначено'}\n🔍 <b>VIN:</b> <code>${parsedData.vin || 'Не вказано'}</code>\n\n📦 <b>Деталі (${parsedData.parts.length}):</b>\n${partsListStr}`;
       
-      await sendTelegramMessage(chatId, reply, env.TELEGRAM_TOKEN, 'HTML');
+      await sendTelegramMessage(currentChatId, reply, env.TELEGRAM_BOT_TOKEN, 'HTML');
 
     } catch (err) {
       console.error('Global Worker Error:', err);
+      if (currentChatId) {
+        await sendTelegramMessage(currentChatId, `⚠️ <b>Помилка обробки замовлення:</b>\n<code>${err.message}</code>`, env.TELEGRAM_BOT_TOKEN, 'HTML');
+      }
     }
 
     return new Response('OK');
@@ -92,20 +98,28 @@ async function parseTextWithLLM(text, apiKey) {
         messages: [
           {
             role: 'system',
-            content: `Ти парсер замовлень автозапчастин (спеціалізація Hyundai/Kia, Mobis).
-Витягни з тексту: "vin" (17 знаків, верхній регістр), "car" (марка, модель, рік) та масив "parts".
-Кожен об'єкт у масиві "parts" повинен мати:
-- "number" (чистий артикул/OEM без пробілів та дефісів у верхньому регістрі)
-- "name" (назва запчастини українською)
-- "quantity" (число, кількість, за замовчуванням 1)
+            content: `You are a strict auto parts order parser specialized in Hyundai, Kia, and Mobis catalogs.
+Extract the VIN and all OEM part numbers from the provided user text.
 
-Формат відповіді СУВОРO JSON:
+Respond ONLY with a valid JSON object matching this schema:
 {
-  "vin": "KMHD...",
-  "car": "Hyundai Tucson 2019",
+  "vin": "17-character VIN code in UPPERCASE, or null if missing",
+  "car": "Vehicle make/model/year if mentioned, or null if missing",
   "parts": [
-    {"number": "58101D3A00", "name": "Колодки передні", "quantity": 1}
-  ]}`
+    {
+      "number": "OEM part number stripped of spaces/dashes in UPPERCASE, or null if invalid",
+      "name": "Part description ONLY if explicitly mentioned in user text, otherwise null",
+      "predicted_name": "Short English description derived from your knowledge of the OEM part number (e.g. 'Front Brake Pads', 'Intercooler', 'Oil Filter'), or null if unknown",
+      "quantity": 1
+    }
+  ]
+}
+
+Rules:
+- Strip all hyphens, dashes, and spaces from OEM part numbers (e.g., '58101-D3A00' -> '58101D3A00').
+- Set "name" ONLY if the input text explicitly contains a part name next to the number.
+- Always provide "predicted_name" in concise English for known Hyundai/Kia/Mobis OEM numbers.
+- Default "quantity" is 1 unless explicitly specified near the part number (e.g., 'x2', '2 pcs', '2 шт').`
           },
           { role: 'user', content: text }
         ]
@@ -125,6 +139,7 @@ async function parseTextWithLLM(text, apiKey) {
     return null;
   }
 }
+
 async function decodeVinViaNhtsa(vin) {
   try {
     const res = await fetch(`https://vpic.nhtsa.dot.gov/api/vehicles/decodevinvalues/${vin}?format=json`, { method: 'GET' });
@@ -151,7 +166,6 @@ async function appendToGoogleSheets(data, orderId, env) {
   const dateStr = now.toLocaleString('uk-UA', { timeZone: 'Europe/Kyiv' });
 
   const rows = data.parts.map(part => {
-    // Очищення артикулу від пробілів і дефісів (наприклад: 58101-D3A00 -> 58101D3A00)
     const cleanNumber = part.number ? part.number.replace(/[^A-Z0-9]/gi, '').toUpperCase() : 'НЕВІДОМО';
     
     return [
@@ -237,9 +251,14 @@ async function sendTelegramMessage(chatId, text, token, parseMode = null) {
   const body = { chat_id: chatId, text: text };
   if (parseMode) body.parse_mode = parseMode;
 
-  await fetch(`https://api.telegram.org/bot${token}/sendMessage`, {
+  const res = await fetch(`https://api.telegram.org/bot${token}/sendMessage`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(body)
   });
+
+  if (!res.ok) {
+    const errText = await res.text();
+    console.error('Telegram SendMessage Error:', errText);
+  }
 }
