@@ -134,28 +134,26 @@ async function parseTextWithLLM(text, apiKey) {
           messages: [
             {
               role: "system",
-              content: `You are a strict auto parts order parser specialized in Hyundai, Kia, and Mobis catalogs.
-Extract the VIN and all OEM part numbers from the provided user text.
+              content: `You are a strict text parser for Hyundai/Kia auto parts orders.
+Extract the VIN code, vehicle information (if present), and all OEM part numbers.
 
-Respond ONLY with a valid JSON object matching this schema:
+Respond ONLY with this JSON schema:
 {
-  "vin": "17-character VIN code in UPPERCASE, or null if missing",
-  "car": "Vehicle make/model/year if mentioned, or null if missing",
+  "vin": "17-character VIN code in UPPERCASE, or null",
+  "car": "Vehicle model/year if mentioned, or null",
   "parts": [
     {
-      "number": "OEM part number stripped of spaces/dashes in UPPERCASE, or null if invalid",
-      "name": "Part description ONLY if explicitly mentioned in user text, otherwise null",
-      "predicted_name": "Short English description derived from your knowledge of the OEM part number (e.g. 'Front Brake Pads', 'Intercooler', 'Oil Filter'), or null if unknown",
+      "number": "OEM part number stripped of space/dashes in UPPERCASE",
+      "name": "Part description ONLY if explicitly typed in the user input text, otherwise null",
       "quantity": 1
     }
   ]
 }
 
 Rules:
-- Strip all hyphens, dashes, and spaces from OEM part numbers (e.g., '58101-D3A00' -> '58101D3A00').
-- Set "name" ONLY if the input text explicitly contains a part name next to the number.
-- Always provide "predicted_name" in concise English for known Hyundai/Kia/Mobis OEM numbers.
-- Default "quantity" is 1 unless explicitly specified near the part number (e.g., 'x2', '2 pcs', '2 шт').`,
+- DO NOT invent, guess, or predict part names. If the input is just part numbers without text descriptions, set "name": null.
+- Strip dashes and spaces from part numbers (e.g., '25310-P0000' -> '25310P0000').
+- Default quantity is 1.`,
             },
             { role: "user", content: text },
           ],
@@ -163,16 +161,10 @@ Rules:
       },
     );
 
-    if (!response.ok) {
-      const errorText = await response.text();
-      console.error("Groq API Error:", errorText);
-      return null;
-    }
-
+    if (!response.ok) return null;
     const resData = await response.json();
     return JSON.parse(resData.choices[0].message.content);
   } catch (e) {
-    console.error("parseTextWithLLM Error:", e);
     return null;
   }
 }
