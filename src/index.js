@@ -86,7 +86,7 @@ async function parseTextWithLLM(text, apiKey) {
         'Content-Type': 'application/json'
       },
       body: JSON.stringify({
-        model: 'llama3-8b-8192',
+        model: 'openai/gpt-oss-20b',
         temperature: 0.0,
         response_format: { type: "json_object" },
         messages: [
