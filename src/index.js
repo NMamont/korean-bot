@@ -15,15 +15,23 @@ export default {
       const payload = await request.json();
       if (!payload.message || !payload.message.text) return new Response('OK');
 
-      const chatId = payload.message.chat.id;
-      const text = payload.message.text;
+// 1. Отримуємо chatId та текст із повідомлення або іншої дії (callback)
+      const chatId = payload.message?.chat?.id || payload.callback_query?.message?.chat?.id;
+      const text = payload.message?.text;
 
       // 2. Безпека: Whitelist за Chat ID
-      const allowedIds = JSON.parse(env.ALLOWED_CHAT_IDS || "[]");
-      if (!allowedIds.includes(chatId)) {
-        console.warn(`Access denied for Chat ID: ${chatId}`);
-        await sendTelegramMessage(chatId, "🚫 Доступ заборонено.", env.TELEGRAM_TOKEN);
-        return new Response('OK');
+      if (chatId) {
+        const rawAllowed = String(env.ALLOWED_CHAT_IDS || '');
+        const allowedIds = rawAllowed
+          .split(',')
+          .map(id => id.trim())
+          .filter(Boolean);
+
+        if (!allowedIds.includes(String(chatId))) {
+          console.warn(`Access denied for Chat ID: ${chatId}`);
+          await sendTelegramMessage(chatId, "🚫 Доступ заборонено.", env.TELEGRAM_BOT_TOKEN);
+          return new Response('OK', { status: 200 });
+        }
       }
 
       // Ігнорування службових команд Telegram
