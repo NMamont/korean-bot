@@ -79,14 +79,14 @@ export default {
 
 async function parseTextWithLLM(text, apiKey) {
   try {
-    const response = await fetch('https://api.openai.com/v1/chat/completions', {
+    const response = await fetch('https://api.groq.com/openai/v1/chat/completions', {
       method: 'POST',
       headers: {
         'Authorization': `Bearer ${apiKey}`,
         'Content-Type': 'application/json'
       },
       body: JSON.stringify({
-        model: 'gpt-4o-mini',
+        model: 'llama-3.1-8b-instant',
         temperature: 0.0,
         response_format: { type: "json_object" },
         messages: [
@@ -105,8 +105,7 @@ async function parseTextWithLLM(text, apiKey) {
   "car": "Hyundai Tucson 2019",
   "parts": [
     {"number": "58101D3A00", "name": "Колодки передні", "quantity": 1}
-  ]
-}`
+  ]}`
           },
           { role: 'user', content: text }
         ]
@@ -115,7 +114,7 @@ async function parseTextWithLLM(text, apiKey) {
 
     if (!response.ok) {
       const errorText = await response.text();
-      console.error('OpenAI API Error:', errorText);
+      console.error('Groq API Error:', errorText);
       return null;
     }
 
@@ -126,7 +125,6 @@ async function parseTextWithLLM(text, apiKey) {
     return null;
   }
 }
-
 async function decodeVinViaNhtsa(vin) {
   try {
     const res = await fetch(`https://vpic.nhtsa.dot.gov/api/vehicles/decodevinvalues/${vin}?format=json`, { method: 'GET' });
