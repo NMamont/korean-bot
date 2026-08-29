@@ -8,5 +8,4 @@ GOOGLE_SPREADSHEET_ID = "11oQUiWgY3M07dqA8nftfCGwe-CuvbtIf5WKf7g9cnlE"
 [build]
 command = ""
 
-[node_compat]
-enabled = true
+compatibility_flags = [ "nodejs_compat" ]
