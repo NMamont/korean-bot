@@ -4,7 +4,16 @@ export default {
       return new Response("Method Not Allowed", { status: 405 });
     }
 
-    // 1. Безпека: Перевірка Telegram Webhook Secret Token
+    // Security: Limit payload size to prevent DoS
+    const contentLength = parseInt(
+      request.headers.get("content-length") || "0",
+      10,
+    );
+    if (contentLength > 10000) {
+      return new Response("Payload too large", { status: 413 });
+    }
+
+    // Security: Verify Telegram Webhook Secret Token
     const telegramSecret = request.headers.get(
       "X-Telegram-Bot-Api-Secret-Token",
     );
@@ -13,19 +22,17 @@ export default {
       return new Response("Unauthorized", { status: 401 });
     }
 
-    // Змінна для chatId, щоб мати доступ до неї у блоці catch
     let currentChatId = null;
 
     try {
       const payload = await request.json();
       if (!payload.message || !payload.message.text) return new Response("OK");
 
-      // Отримуємо chatId та текст
       currentChatId =
         payload.message?.chat?.id || payload.callback_query?.message?.chat?.id;
       const text = payload.message?.text;
 
-      // 2. Безпека: Whitelist за Chat ID
+      // Security: Whitelist by Chat ID
       if (currentChatId) {
         const rawAllowed = String(env.ALLOWED_CHAT_IDS || "");
         const allowedIds = rawAllowed
@@ -44,7 +51,7 @@ export default {
         }
       }
 
-      // Ігнорування службових команд Telegram
+      // Ignore service commands
       if (text.startsWith("/")) {
         await sendTelegramMessage(
           currentChatId,
@@ -54,14 +61,14 @@ export default {
         return new Response("OK");
       }
 
-      // UX: Миттєвий фідбек
+      // UX: Instant feedback
       await sendTelegramMessage(
         currentChatId,
         "⏳ ШІ аналізує текст та розшифровує дані...",
         env.TELEGRAM_SECRET_TOKEN,
       );
 
-      // Крок 1: Парсинг через Groq API
+      // Step 1: Parse with Groq API
       const parsedData = await parseTextWithLLM(text, env.OPENAI_API_KEY);
 
       if (!parsedData || !parsedData.parts || parsedData.parts.length === 0) {
@@ -73,19 +80,19 @@ export default {
         return new Response("OK");
       }
 
-      // Крок 2: Збагачення автомобіля через NHTSA API (якщо є VIN)
+      // Step 2: Enrich car data via NHTSA API (if VIN present)
       if (parsedData.vin && parsedData.vin.length >= 10) {
         const exactCar = await decodeVinViaNhtsa(parsedData.vin);
         if (exactCar) {
-          parsedData.car = exactCar; // Замінюємо гіпотезу ШІ на паспортні дані
+          parsedData.car = exactCar;
         }
       }
 
-      // Крок 3: Запис у Google Sheets
-      const orderId = `ORD-${Date.now().toString().slice(-6)}`;
+      // Step 3: Append to Google Sheets
+      const orderId = `ORD-${crypto.randomUUID().slice(0, 8).toUpperCase()}`;
       await appendToGoogleSheets(parsedData, orderId, env);
 
-      // Крок 4: Формування та відправка звіту користувачу
+      // Step 4: Send report to user
       const partsListStr = parsedData.parts
         .map((p) => {
           const nameToDisplay = p.name || p.predicted_name || "";
@@ -117,12 +124,29 @@ export default {
   },
 };
 
+// Safer base64 URL encode that works with large strings
+function base64UrlEncode(input) {
+  const bytes =
+    typeof input === "string"
+      ? new TextEncoder().encode(input)
+      : new Uint8Array(input);
+  let binary = "";
+  for (let i = 0; i < bytes.length; i++) {
+    binary += String.fromCharCode(bytes[i]);
+  }
+  return btoa(binary).replace(/=/g, "").replace(/\+/g, "-").replace(/\//g, "_");
+}
+
 async function parseTextWithLLM(text, apiKey) {
+  const controller = new AbortController();
+  const timeoutId = setTimeout(() => controller.abort(), 15000);
+
   try {
     const response = await fetch(
       "https://api.groq.com/openai/v1/chat/completions",
       {
         method: "POST",
+        signal: controller.signal,
         headers: {
           Authorization: `Bearer ${apiKey}`,
           "Content-Type": "application/json",
@@ -164,16 +188,21 @@ Rules:
     if (!response.ok) return null;
     const resData = await response.json();
     return JSON.parse(resData.choices[0].message.content);
-  } catch (e) {
+  } catch {
     return null;
+  } finally {
+    clearTimeout(timeoutId);
   }
 }
 
 async function decodeVinViaNhtsa(vin) {
+  const controller = new AbortController();
+  const timeoutId = setTimeout(() => controller.abort(), 5000);
+
   try {
     const res = await fetch(
       `https://vpic.nhtsa.dot.gov/api/vehicles/decodevinvalues/${vin}?format=json`,
-      { method: "GET" },
+      { method: "GET", signal: controller.signal },
     );
     if (!res.ok) return null;
     const data = await res.json();
@@ -187,6 +216,8 @@ async function decodeVinViaNhtsa(vin) {
     }
   } catch (e) {
     console.error("NHTSA API Error:", e);
+  } finally {
+    clearTimeout(timeoutId);
   }
   return null;
 }
@@ -205,37 +236,44 @@ async function appendToGoogleSheets(data, orderId, env) {
       ? part.number.replace(/[^A-Z0-9]/gi, "").toUpperCase()
       : "";
 
-    // Беремо явну назву, або предиктивну англійською, або залишаємо порожньою:
     const finalPartName = part.name || part.predicted_name || "";
 
     return [
-      orderId, // Column A: Order ID
-      dateStr, // Column B: Date/Time
-      "🆕 Нове", // Column C: Status
-      data.car || "", // Column D: Car Model
-      data.vin ? data.vin.toUpperCase() : "", // Column E: VIN
-      cleanNumber, // Column F: OEM Part Number
-      "", // Column G: Cross-number
-      finalPartName, // Column H: Part Name (English from AI)
-      part.quantity || 1, // Column I: Quantity
+      orderId,
+      dateStr,
+      "🆕 Нове",
+      data.car || "",
+      data.vin ? data.vin.toUpperCase() : "",
+      cleanNumber,
+      "",
+      finalPartName,
+      part.quantity || 1,
     ];
   });
 
   const range = "Замовлення!A:I";
   const url = `https://sheets.googleapis.com/v4/spreadsheets/${env.GOOGLE_SPREADSHEET_ID}/values/${encodeURIComponent(range)}:append?valueInputOption=USER_ENTERED`;
 
-  const response = await fetch(url, {
-    method: "POST",
-    headers: {
-      Authorization: `Bearer ${accessToken}`,
-      "Content-Type": "application/json",
-    },
-    body: JSON.stringify({ values: rows }),
-  });
+  const controller = new AbortController();
+  const timeoutId = setTimeout(() => controller.abort(), 10000);
 
-  if (!response.ok) {
-    const errRes = await response.text();
-    throw new Error(`Google Sheets Append Error: ${errRes}`);
+  try {
+    const response = await fetch(url, {
+      method: "POST",
+      signal: controller.signal,
+      headers: {
+        Authorization: `Bearer ${accessToken}`,
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({ values: rows }),
+    });
+
+    if (!response.ok) {
+      const errRes = await response.text();
+      throw new Error(`Google Sheets Append Error: ${errRes}`);
+    }
+  } finally {
+    clearTimeout(timeoutId);
   }
 }
 
@@ -250,15 +288,6 @@ async function getGoogleAccessToken(clientEmail, privateKeyJson) {
     aud: "https://oauth2.googleapis.com/token",
     exp: now + 3600,
     iat: now,
-  };
-
-  const base64UrlEncode = (obj) => {
-    const str = typeof obj === "string" ? obj : JSON.stringify(obj);
-    const raw = new TextEncoder().encode(str);
-    return btoa(String.fromCharCode(...raw))
-      .replace(/=/g, "")
-      .replace(/\+/g, "-")
-      .replace(/\//g, "_");
   };
 
   const jwtHeader = base64UrlEncode(header);
@@ -289,10 +318,7 @@ async function getGoogleAccessToken(clientEmail, privateKeyJson) {
     cryptoKey,
     new TextEncoder().encode(signatureInput),
   );
-  const jwtSignature = btoa(String.fromCharCode(...new Uint8Array(signature)))
-    .replace(/=/g, "")
-    .replace(/\+/g, "-")
-    .replace(/\//g, "_");
+  const jwtSignature = base64UrlEncode(new Uint8Array(signature));
 
   const response = await fetch("https://oauth2.googleapis.com/token", {
     method: "POST",
